@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>AeroControl</title>
+  <meta name="description" content="AeroControl — MICCA digital: controle de componentes da frota por horas e por data, com vencimentos calculados automaticamente.">
+  <meta name="theme-color" content="#0C1C36">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='10' fill='%230C1C36'/%3E%3Ccircle cx='20' cy='20' r='13' fill='none' stroke='%23D8C59B' stroke-width='1.4'/%3E%3Cpath d='M20 9.5l1.3 7.6 7.7 4.1v1.6l-7.7-2.1-.4 5.6 2.3 1.6v1.2L20 28.2l-3.2.9v-1.2l2.3-1.6-.4-5.6-7.7 2.1v-1.6l7.7-4.1z' fill='%23D8C59B' transform='rotate(45 20 20)'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Manrope:wght@400..800&display=swap">
+  <link rel="stylesheet" href="css/style.css">
+  <script>
+    /* tema antes da primeira pintura, para não piscar */
+    (function () {
+      var t = null;
+      try { t = localStorage.getItem('aerocontrol.tema'); } catch (e) {}
+      document.documentElement.dataset.tema = t === 'escuro' ? 'escuro' : 'claro';
+    })();
+  </script>
+</head>
+<body>
+  <header class="topo">
+    <div class="topo-int">
+      <a class="marca" href="#/painel" aria-label="AeroControl — painel">
+        <svg class="marca-simbolo" viewBox="0 0 40 40" aria-hidden="true">
+          <circle cx="20" cy="20" r="18.5" fill="none" stroke="currentColor" stroke-width="1.2" opacity=".55"/>
+          <circle cx="20" cy="20" r="14" fill="none" stroke="currentColor" stroke-width="1.2"/>
+          <path d="M20 9.5l1.3 7.6 7.7 4.1v1.6l-7.7-2.1-.4 5.6 2.3 1.6v1.2L20 28.2l-3.2.9v-1.2l2.3-1.6-.4-5.6-7.7 2.1v-1.6l7.7-4.1z" fill="currentColor" transform="rotate(45 20 20)"/>
+        </svg>
+        <span class="marca-nome">AeroControl<small>MICCA digital</small></span>
+      </a>
+      <nav class="nav" aria-label="Principal">
+        <a href="#/painel" data-nav="painel">Painel</a>
+        <details class="menu nav-menu" id="menu-aeronaves">
+          <summary data-nav="aeronave">Aeronaves<svg class="ic seta" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary>
+          <div class="menu-lista" id="lista-aeronaves"></div>
+        </details>
+        <a href="#/vencimentos" data-nav="vencimentos">Vencimentos</a>
+      </nav>
+      <div class="busca" role="search">
+        <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7.5"/><path d="m20.5 20.5-4.2-4.2"/></svg>
+        <label for="busca-global" class="so-leitor">Buscar na frota</label>
+        <input id="busca-global" type="search" placeholder="Buscar item, P/N, N/S ou matrícula" autocomplete="off" aria-controls="busca-res">
+        <kbd aria-hidden="true">/</kbd>
+        <div class="busca-res" id="busca-res" hidden></div>
+      </div>
+      <button type="button" class="ref-pilula" id="ref-pilula" data-acao="abrirRef"></button>
+      <div class="topo-acoes">
+        <button type="button" class="botao ouro" data-acao="lancarHoras" aria-label="Lançar horas voadas"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg><span class="rotulo">Lançar horas</span></button>
+        <button type="button" class="botao icone claro" id="btn-tema" data-acao="tema" aria-label="Alternar tema"></button>
+        <button type="button" class="botao icone claro" data-acao="config" aria-label="Configurações"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 4h-7"/><path d="M10 4H3"/><path d="M21 12h-9"/><path d="M8 12H3"/><path d="M21 20h-5"/><path d="M12 20H3"/><path d="M14 2v4"/><path d="M8 10v4"/><path d="M16 18v4"/></svg></button>
+      </div>
+    </div>
+  </header>
+
+  <main id="conteudo" tabindex="-1"></main>
+
+  <dialog id="dlg" class="dlg"></dialog>
+  <dialog id="folha" class="folha"></dialog>
+  <dialog id="confirma" class="dlg estreito"></dialog>
+  <div class="avisos" id="avisos" aria-live="polite"></div>
+
+  <script src="js/regras.js"></script>
+  <script src="js/semente.js"></script>
+  <script src="js/dados.js"></script>
+  <script src="js/app.js"></script>
+  <script src="js/graficos.js"></script>
+  <script src="js/planilha.js"></script>
+  <script src="js/acoes.js"></script>
+  <script src="js/telas/painel.js"></script>
+  <script src="js/telas/aeronave.js"></script>
+  <script src="js/telas/vencimentos.js"></script>
+  <script src="js/telas/imprimir.js"></script>
+</body>
+</html>
