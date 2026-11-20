@@ -221,7 +221,7 @@
         <div class="menu-lista">
           <button type="button" data-acao="editarAeronave" data-id="${a.id}">${ic('lapis')}Editar dados da aeronave</button>
           <button type="button" data-acao="novoItem">${ic('mais')}Novo item ${mapaAtual ? 'em ' + esc(mapaAtual.nome) : ''}</button>
-          <button type="button" data-acao="importarCsv">${ic('subir')}Importar planilha (CSV)</button>
+          <button type="button" data-acao="importarCsv">${ic('subir')}Importar planilha</button>
           <button type="button" data-acao="exportarCsv">${ic('baixar')}Exportar ${mapaAtual ? esc(mapaAtual.nome) : 'mapa'} (CSV)</button>
           <button type="button" data-acao="novaAeronave" data-copiar="${a.id}">${ic('copiar')}Nova aeronave com esta estrutura</button>
           <hr><button type="button" class="perigo" data-acao="excluirAeronave" data-id="${a.id}">${ic('lixo')}Excluir aeronave</button>

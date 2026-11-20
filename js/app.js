@@ -44,7 +44,8 @@
     grade: '<rect width="7" height="7" x="3" y="3" rx="1.5"/><rect width="7" height="7" x="14" y="3" rx="1.5"/><rect width="7" height="7" x="14" y="14" rx="1.5"/><rect width="7" height="7" x="3" y="14" rx="1.5"/>',
     tabela: '<path d="M3 5h18"/><path d="M3 12h18"/><path d="M3 19h18"/>',
     escudo: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/>',
-    ordenar: '<path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/>'
+    ordenar: '<path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/>',
+    sair: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/>'
   };
   const ic = (n, cls) => `<svg class="ic${cls ? ' ' + cls : ''}" viewBox="0 0 24 24" aria-hidden="true">${ICONES[n] || ''}</svg>`;
 
@@ -171,11 +172,14 @@
     const escuro = document.documentElement.dataset.tema === 'escuro';
     $('#btn-tema').innerHTML = ic(escuro ? 'sol' : 'lua');
     $('#btn-tema').setAttribute('aria-label', escuro ? 'Usar tema claro' : 'Usar tema escuro');
+    $('#btn-sair').title = `Sair (${D.auth.email()})`;
+    $('#btn-sair').setAttribute('aria-label', `Sair (${D.auth.email()})`);
   }
 
   /* ---------- rotas ---------- */
   async function rotear(op) {
     op = op || {};
+    if (document.body.classList.contains('sem-sessao')) return;   // ninguém logado: só a tela de entrada
     const h = location.hash || '#/painel';
     const c = await contexto();
     pintarTopo(c);
@@ -255,7 +259,8 @@
       document.documentElement.dataset.tema = escuro ? 'escuro' : 'claro';
       try { localStorage.setItem('aerocontrol.tema', escuro ? 'escuro' : 'claro'); } catch (e) { /* sem armazenamento: só nesta sessão */ }
       pintarTopo(R.contexto(cfg));
-    }
+    },
+    sair: async () => { await D.auth.sair(); telaEntrar(); }
   });
   function fecharBusca() { $('#busca-res').hidden = true; $('#busca-global').value = ''; }
 
@@ -312,20 +317,64 @@
     ['#dlg', '#folha'].forEach(sel => $(sel).addEventListener('click', e => { if (e.target === e.currentTarget) e.currentTarget.close(); }));
     window.addEventListener('hashchange', () => { fecharDialogo(); fecharFolha(); document.querySelectorAll('details.menu[open]').forEach(d => { d.open = false; }); rotear(); });
     $('#menu-aeronaves').addEventListener('toggle', e => { if (e.target.open) montarMenuAeronaves(); });
+    /* voltou para a aba depois de 2 min fora: recarrega para mostrar o que outra pessoa mudou */
+    let saiuEm = 0;
+    document.addEventListener('visibilitychange', async () => {
+      if (document.hidden) { saiuEm = Date.now(); return; }
+      if (!saiuEm || Date.now() - saiuEm < 120000 || document.body.classList.contains('sem-sessao') || document.querySelector('dialog[open]')) return;
+      try { await D.recarregar(); await AC.redesenhar(); }
+      catch (e) { if (D.auth.email()) aviso(e.message, { tipo: 'erro' }); else telaEntrar(e.message); }
+    });
   }
 
   AC.ui = { $, esc, ic, faixa, etiqueta, medidor, quando, moldura, abrirDialogo, fecharDialogo, abrirFolha, fecharFolha, confirmar, erroForm, aviso, baixar };
   AC.contexto = contexto;
   AC.cfg = () => cfg;
 
+  /* ---------- entrada (login) ---------- */
+  function telaEntrar(msg) {
+    fecharDialogo(); fecharFolha();
+    document.body.classList.add('sem-sessao');
+    document.title = 'Entrar · AeroControl';
+    $('#conteudo').innerHTML = `<section class="entrar">${ARCOS}
+      <form class="entrar-cartao" id="form-entrar" novalidate>
+        <div class="entrar-marca">${$('.marca-simbolo').outerHTML}<span>AeroControl<small>MICCA digital</small></span></div>
+        <h1>Entrar</h1>
+        <p class="entrar-sub">Controle de componentes da frota. Acesso só para usuários autorizados.</p>
+        <div class="erro-form" role="alert"${msg ? '' : ' hidden'}>${esc(msg || '')}</div>
+        <div class="campo"><label for="en-email">E-mail</label><input id="en-email" name="email" type="email" autocomplete="username" required></div>
+        <div class="campo"><label for="en-senha">Senha</label><input id="en-senha" name="senha" type="password" autocomplete="current-password" required></div>
+        <button type="submit" class="botao primario">Entrar</button>
+        <p class="entrar-rodape">Esqueceu a senha? Fale com o administrador do sistema.</p>
+      </form></section>`;
+    const f = $('#form-entrar');
+    const erro = texto => { const e = f.querySelector('.erro-form'); e.textContent = texto; e.hidden = false; };
+    setTimeout(() => f.elements.email.focus(), 30);
+    f.addEventListener('submit', async e => {
+      e.preventDefault();
+      const email = f.elements.email.value.trim().toLowerCase(), senha = f.elements.senha.value;
+      if (!email || !senha) { erro('Informe e-mail e senha.'); return; }
+      const btn = f.querySelector('button[type=submit]');
+      btn.disabled = true; btn.textContent = 'Entrando…';
+      try { await D.auth.entrar(email, senha); await abrirApp(); }
+      catch (err) { erro(err.message || 'Não foi possível entrar.'); btn.disabled = false; btn.textContent = 'Entrar'; }
+    });
+  }
+
+  let ligado = false;
+  async function abrirApp() {
+    document.body.classList.remove('sem-sessao');
+    if (!ligado) { ligar(); ligado = true; }
+    await rotear();
+  }
   async function iniciar() {
+    D.auth.aoEncerrar = motivo => telaEntrar(motivo);
     try {
-      await D.iniciar();
-      ligar();
-      await rotear();
+      if (await D.iniciar()) await abrirApp(); else telaEntrar();
     } catch (err) {
       console.error(err);
-      $('#conteudo').innerHTML = `<div class="vazio-tabela"><strong>Não foi possível abrir o AeroControl</strong>${esc(err.message)}</div>`;
+      if (!D.auth.email()) { telaEntrar(err.message); return; }
+      $('#conteudo').innerHTML = `<div class="vazio-tabela"><strong>Não foi possível abrir o AeroControl</strong>${esc(err.message)}<div style="margin-top:14px"><button type="button" class="botao primario" onclick="location.reload()">Tentar de novo</button></div></div>`;
     }
   }
   document.addEventListener('DOMContentLoaded', iniciar);

@@ -428,57 +428,167 @@
     U.baixar(`MICCA-${at.a.matricula}-${nome}.csv`.replace(/\s+/g, '-'), txt, 'text/csv;charset=utf-8');
     U.aviso(`Mapa ${nome} exportado. O mesmo arquivo serve de modelo para importar.`);
   }
-  let importacao = null;
+  /* ---- importar planilha: 1) escolher o arquivo  2) conferir  3) aplicar (só aí grava) ---- */
+  let imp = null;
+  const ST_IMP = { novo: 'Novo', atualiza: 'Atualiza', igual: 'Igual', repetida: 'Repetida' };
   async function importarCsv() {
     const at = exigirAeronaveAtual();
     const mapa = at.aba === 'historico' ? at.a.mapas[0].id : at.aba;
-    importacao = null;
+    imp = null;
     U.abrirDialogo(U.moldura({
-      titulo: 'Importar planilha do MICCA', sub: `Para ${esc(at.a.matricula)}. Use um CSV com as colunas do MICCA — o arquivo de “Exportar” é o modelo.`,
-      form: 'importar', previa: 'importar',
-      corpo: `<input type="hidden" name="av" value="${at.a.id}"><div class="form-grade">
-        ${campo('Arquivo CSV', `<input id="im-arq" name="arquivo" type="file" accept=".csv,text/csv">`, 'c6', 'No Excel: Arquivo › Salvar como › CSV (separado por ponto e vírgula).')}
-        ${campo('Mapa de destino', `<select id="im-mapa" name="mapa">${at.a.mapas.map(m => opt(m.id, m.nome, m.id === mapa)).join('')}</select>`, 'meia', 'Usado quando a planilha não tem a coluna Mapa.')}
-        <div class="campo meia"><span class="rot">Itens que já existem</span><div class="opcoes-radio">
-          <label><input type="radio" name="modo" value="somar" checked>Manter e somar</label>
-          <label><input type="radio" name="modo" value="trocar">Substituir o mapa</label></div></div>
-        <div class="previa" id="im-previa" aria-live="polite">Escolha o arquivo para ver o que será importado.</div>
-        <p class="dica" style="grid-column:1/-1;margin:0;font-size:12.5px;color:var(--tinta-3)">Colunas reconhecidas: ${AC.planilha.COLUNAS.join(' · ')}</p>
-      </div>`,
-      rodape: `<button type="button" class="botao" data-acao="fecharDialogo">Cancelar</button><button type="submit" class="botao primario">${ic('subir')}Importar</button>`
-    }), 'largo');
+      titulo: 'Importar planilha', sub: `Para ${esc(at.a.matricula)}. Você confere tudo antes de gravar.`,
+      corpo: `<label class="soltar" for="im-arq">${ic('subir')}<b>Escolher planilha</b>
+          <span>Excel (.xlsx) ou CSV. Colunas com outros nomes (Part Number, Descrição, Serial…) são reconhecidas sozinhas.</span>
+          <input id="im-arq" type="file" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></label>
+        <p class="dica-imp">Dica: o arquivo de “Exportar” é o modelo completo. Planilha com várias abas (Célula, Motor, Hélice) entra de uma vez.</p>`,
+      rodape: `<button type="button" class="botao" data-acao="fecharDialogo">Cancelar</button>`
+    }), 'estreito');
+    const inp = document.getElementById('im-arq');
+    inp.addEventListener('change', async () => {
+      const arq = inp.files[0];
+      if (!arq) return;
+      try { await abrirConferencia(arq, at.a.id, mapa); }
+      catch (e) { console.error(e); U.aviso(e.message || 'Não foi possível ler a planilha.', { tipo: 'erro' }); inp.value = ''; }
+    });
   }
-  AC.previas.importar = async f => {
-    const box = document.getElementById('im-previa');
-    const arq = f.elements.arquivo.files[0];
-    if (!arq) return;
-    const a = await D.aeronaves.obter(val(f, 'av'));
-    const texto = await arq.text();
-    importacao = AC.planilha.interpretar(texto, a, val(f, 'mapa'));
-    const porMapa = {};
-    importacao.itens.forEach(i => { porMapa[i.mapa] = (porMapa[i.mapa] || 0) + 1; });
-    box.innerHTML = `<b>${importacao.itens.length}</b> de ${importacao.linhasLidas} linhas prontas para importar` +
-      (Object.keys(porMapa).length ? ` (${Object.entries(porMapa).map(([m, n]) => `${esc(a.mapas.find(x => x.id === m)?.nome)}: ${n}`).join(', ')})` : '') + '.' +
-      (importacao.erros.length ? `<br><b>${importacao.erros.length} ${importacao.erros.length === 1 ? 'linha com problema' : 'linhas com problema'}</b> (serão ignoradas):<ul>${importacao.erros.slice(0, 6).map(e => `<li>${esc(e)}</li>`).join('')}${importacao.erros.length > 6 ? `<li>e mais ${importacao.erros.length - 6}</li>` : ''}</ul>` : '');
+  async function abrirConferencia(arq, avId, mapaPadrao) {
+    const a = await D.aeronaves.obter(avId);
+    const abas = (await AC.planilha.abrir(arq)).filter(x => x.linhas.some(l => l.some(c => String(c ?? '').trim())));
+    if (!abas.length) throw new Error('A planilha está vazia.');
+    const pelaAba = nome => { const k = nome.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase(); return a.mapas.find(m => k.includes(m.nome.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()) || k.includes(m.tipo))?.id; };
+    imp = {
+      arquivo: arq.name, a, filtro: 'todos', desmarcados: new Set(),
+      existentes: JSON.parse(JSON.stringify(await D.itens.daAeronave(a.id))),
+      util: R.utilizacaoDia(a, await D.lancamentos.todos(), ctxAtual().ref).porDia,
+      abas: abas.map(x => ({ nome: x.nome, linhas: x.linhas, mapa: (abas.length > 1 && pelaAba(x.nome)) || mapaPadrao, campos: null }))
+    };
+    recalcular();
+    desenharConferencia(true);
+  }
+  function recalcular() {
+    const entrada = [];
+    imp.erros = [];
+    imp.abas.forEach(ab => {
+      ab.res = null;
+      if (!ab.mapa) return;   // "Não importar"
+      const res = AC.planilha.interpretar(ab.linhas, imp.a, ab.mapa, ab.campos);
+      ab.res = res; ab.campos = res.campos;
+      res.itens.forEach(x => entrada.push({ it: x.it, linha: x.linha, aba: ab.nome, presentes: res.presentes }));
+      res.erros.forEach(e => imp.erros.push(imp.abas.length > 1 ? `${ab.nome} · ${e}` : e));
+    });
+    imp.linhas = AC.planilha.conferir(entrada, imp.existentes);
+  }
+  const aplicaveis = () => imp.linhas.filter(l => (l.status === 'novo' || l.status === 'atualiza') && !imp.desmarcados.has(l.chave));
+  const fmtValor = (campo, v) => {
+    if (v === null || v === undefined || v === '') return '—';
+    if (typeof v === 'boolean') return v ? 'Sim' : 'Não';
+    if (campo === 'situacao') return AC.planilha.SIT_TXT[v] || v;
+    if (campo === 'refMapa') return AC.planilha.TIPO_TXT[v] || v;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return R.fmtData(v);
+    if (typeof v === 'number') return R.fmtH(v);
+    if (/^\d+[dma]$/.test(v)) return R.intervaloTxt(R.lerIntervalo(v));
+    return String(v);
   };
-  AC.forms.importar = async f => {
-    if (!importacao) throw new Error('Escolha o arquivo CSV.');
-    if (!importacao.itens.length) throw new Error('Nenhuma linha válida para importar. Confira os avisos acima.');
-    const a = await D.aeronaves.obter(val(f, 'av'));
-    const mapas = [...new Set(importacao.itens.map(i => i.mapa))];
-    if (f.elements.modo.value === 'trocar') {
-      const ok = await U.confirmar({ titulo: 'Substituir os itens?', texto: `Os itens atuais de ${mapas.map(m => esc(a.mapas.find(x => x.id === m)?.nome)).join(', ')} serão apagados e trocados pelos ${importacao.itens.length} da planilha.`, botao: 'Substituir', perigo: true });
-      if (!ok) return;
-      for (const m of mapas) await D.itens.excluirDoMapa(a.id, m);
-    }
-    const existentes = await D.itens.daAeronave(a.id);
-    const ordemBase = {};
-    mapas.forEach(m => { ordemBase[m] = existentes.filter(i => i.mapa === m).reduce((x, i) => Math.max(x, i.ordem || 0), 0); });
-    importacao.itens.forEach(i => { ordemBase[i.mapa] += 10; i.ordem = ordemBase[i.mapa]; });
-    const n = await D.itens.salvarVarios(importacao.itens);
-    importacao = null;
+  function controleTxt(it) {
+    const p = [];
+    if (it.tboHoras !== null && it.tboHoras !== undefined) p.push(`TBO ${R.fmtH(it.tboHoras)} h`);
+    if (it.tboData) p.push(`TBO ${R.intervaloTxt(R.lerIntervalo(it.tboData))}`);
+    if (it.tlvHoras !== null && it.tlvHoras !== undefined) p.push(`TLV ${R.fmtH(it.tlvHoras)} h`);
+    if (it.tlvData) p.push(`TLV ${R.intervaloTxt(R.lerIntervalo(it.tlvData))}`);
+    if (it.validade) p.push(`Validade ${R.fmtData(it.validade, it.validadeMes)}`);
+    return p.join(' · ') || '—';
+  }
+  function linhaConferencia(l, ctx) {
+    const it = l.it, a = imp.a;
+    const mapa = a.mapas.find(m => m.id === it.mapa)?.nome || it.mapa;
+    const r = R.calcular(it, a, ctx, imp.util);
+    const venc = [r.vencData ? R.fmtData(r.vencData) : '', r.vencTsn !== null ? `${R.fmtH(r.vencTsn)} h` : ''].filter(Boolean).join(' · ');
+    const pode = l.status === 'novo' || l.status === 'atualiza';
+    const mud = l.mud.length ? `<ul class="cf-mud">${l.mud.slice(0, 4).map(m => `<li>${esc(m.rotulo)}: <s>${esc(fmtValor(m.campo, m.de))}</s> → <b>${esc(fmtValor(m.campo, m.para))}</b></li>`).join('')}${l.mud.length > 4 ? `<li>e mais ${l.mud.length - 4} campos</li>` : ''}</ul>` : '';
+    return `<tr class="cf-${l.status}">
+      <td class="cf-marca">${pode ? `<input type="checkbox" data-cf-marca="${esc(l.chave)}"${imp.desmarcados.has(l.chave) ? '' : ' checked'} aria-label="Aplicar ${esc(it.nome)}">` : ''}</td>
+      <td><span class="cf-selo cf-${l.status}">${ST_IMP[l.status]}</span><small class="cf-lin">linha ${l.linha}</small></td>
+      <td><b class="cf-nome">${esc(it.nome)}</b><small>${esc([mapa, it.secao, it.grupo].filter(Boolean).join(' · '))}</small>${mud}</td>
+      <td class="cf-pn">${esc(it.pn || '—')}<small>${it.ns ? 'N/S ' + esc(it.ns) : ''}</small></td>
+      <td>${esc(controleTxt(it))}</td>
+      <td><span class="cf-venc">${esc(venc || '—')}</span>${U.etiqueta(r.situacao)}</td>
+    </tr>`;
+  }
+  function desenharConferencia(primeira) {
+    const L = imp.linhas, a = imp.a, ctx = ctxAtual();
+    const n = { novo: 0, atualiza: 0, igual: 0, repetida: 0 };
+    L.forEach(l => { n[l.status]++; });
+    const nProb = imp.erros.length + n.repetida;
+    const f = imp.filtro;
+    const vis = f === 'todos' ? L.filter(l => l.status !== 'repetida') : L.filter(l => l.status === f);
+    const seg = (v, rot, q, cls) => `<button type="button" data-cf-filtro="${v}" aria-pressed="${f === v}">${rot}<span class="n${cls ? ' ' + cls : ''}">${q}</span></button>`;
+    const abas = imp.abas.map((ab, i) => {
+      const reconh = (ab.campos || []).filter(Boolean).length, total = (ab.res?.titulos || ab.linhas[0] || []).length;
+      const semNome = ab.res && !ab.campos.includes('nomenclatura');
+      return `<div class="cf-aba">
+        <div class="cf-aba-cab"><b>${esc(ab.nome)}</b><span>${ab.res ? `${ab.res.linhasLidas} ${ab.res.linhasLidas === 1 ? 'linha' : 'linhas'}` : 'fora da importação'}</span>
+          <label>Mapa <select data-cf-aba="${i}">${a.mapas.map(m => opt(m.id, m.nome, m.id === ab.mapa)).join('')}${imp.abas.length > 1 ? opt('', 'Não importar esta aba', !ab.mapa) : ''}</select></label></div>
+        ${ab.res ? `<details${semNome ? ' open' : ''}><summary>Colunas: ${reconh} reconhecidas${total - reconh > 0 ? `, ${total - reconh} ignoradas` : ''} <em>conferir ou corrigir</em></summary>
+          <div class="cf-colunas">${ab.res.titulos.map((t, j) => `<label><span>${esc(String(t).trim() || 'Coluna ' + (j + 1))}</span>
+            <select data-cf-aba="${i}" data-cf-col="${j}">${opt('', 'Ignorar', !ab.campos[j])}${AC.planilha.CAMPOS.map(([k, rot]) => opt(k, rot, ab.campos[j] === k)).join('')}</select></label>`).join('')}</div></details>` : ''}
+      </div>`;
+    }).join('');
+    const corpoTabela = f === 'problemas'
+      ? `<ul class="cf-problemas">${imp.erros.map(e => `<li>${ic('alerta')}${esc(e)}</li>`).join('')}${L.filter(l => l.status === 'repetida').map(l => `<li>${ic('alerta')}${imp.abas.length > 1 ? esc(l.aba) + ' · ' : ''}Linha ${l.linha}: ${esc(l.it.nome)} repete a linha ${l.igualA} (mesmo nome, P/N e N/S) — fica de fora.</li>`).join('')}${nProb ? '' : '<li class="ok">Nenhum problema encontrado.</li>'}</ul>`
+      : vis.length ? `<div class="cf-rolagem"><table class="cf-tabela"><thead><tr><th class="cf-marca">${vis.some(l => l.status === 'novo' || l.status === 'atualiza') ? `<input type="checkbox" data-cf-todos aria-label="Marcar todos" checked>` : ''}</th><th>Importação</th><th>Item</th><th>P/N · N/S</th><th>Controle</th><th>Vencimento</th></tr></thead>
+          <tbody>${vis.map(l => linhaConferencia(l, ctx)).join('')}</tbody></table></div>`
+        : `<div class="vazio-bloco"><strong>Nada aqui</strong>Nenhuma linha neste filtro.</div>`;
+    const qtd = aplicaveis().length;
+    const html = U.moldura({
+      titulo: 'Conferir importação', sub: `${esc(imp.arquivo)} → ${esc(a.matricula)}. Nada foi gravado ainda: confira e aplique.`, form: 'conferencia',
+      corpo: `<div class="cf-abas">${abas}</div>
+        <div class="segmentos cf-filtros" role="group" aria-label="Filtrar linhas">${seg('todos', 'Todos', n.novo + n.atualiza + n.igual)}${seg('novo', 'Novos', n.novo)}${seg('atualiza', 'Atualizam', n.atualiza)}${seg('igual', 'Iguais', n.igual)}${seg('problemas', 'Problemas', nProb, nProb ? 'n-venc' : '')}</div>
+        ${corpoTabela}`,
+      rodape: `<span class="esq cf-nota">Itens iguais não mudam nada. Os que já existem mantêm o histórico.</span>
+        <button type="button" class="botao" data-acao="fecharDialogo">Cancelar</button>
+        <button type="submit" class="botao primario" id="cf-aplicar"${qtd ? '' : ' disabled'}>${ic('ok')}Aplicar ${qtd} ${qtd === 1 ? 'item' : 'itens'}</button>`
+    });
+    const dlg = document.getElementById('dlg');
+    const rol = dlg.querySelector('.dlg-corpo')?.scrollTop || 0;
+    if (primeira || !dlg.open) U.abrirDialogo(html, 'enorme'); else dlg.innerHTML = html;
+    if (!primeira) dlg.querySelector('.dlg-corpo').scrollTop = rol;
+    ligarConferencia(dlg.querySelector('form'));
+  }
+  function ligarConferencia(form) {
+    const contar = () => { const q = aplicaveis().length, b = form.querySelector('#cf-aplicar'); b.disabled = !q; b.lastChild.textContent = `Aplicar ${q} ${q === 1 ? 'item' : 'itens'}`; };
+    form.addEventListener('change', e => {
+      const t = e.target;
+      if (t.dataset.cfMarca !== undefined) { if (t.checked) imp.desmarcados.delete(t.dataset.cfMarca); else imp.desmarcados.add(t.dataset.cfMarca); contar(); return; }
+      if (t.dataset.cfTodos !== undefined) {
+        form.querySelectorAll('[data-cf-marca]').forEach(c => { c.checked = t.checked; if (t.checked) imp.desmarcados.delete(c.dataset.cfMarca); else imp.desmarcados.add(c.dataset.cfMarca); });
+        contar(); return;
+      }
+      if (t.dataset.cfAba !== undefined) {
+        const ab = imp.abas[+t.dataset.cfAba];
+        if (t.dataset.cfCol !== undefined) ab.campos[+t.dataset.cfCol] = t.value; else ab.mapa = t.value;
+        recalcular(); desenharConferencia();
+      }
+    });
+    form.addEventListener('click', e => {
+      const b = e.target.closest('[data-cf-filtro]');
+      if (b) { imp.filtro = b.dataset.cfFiltro; desenharConferencia(); }
+    });
+  }
+  AC.forms.conferencia = async () => {
+    const escolhidas = aplicaveis();
+    if (!escolhidas.length) throw new Error('Nada para aplicar: marque ao menos um item novo ou que atualiza.');
+    const a = imp.a, ordem = {};
+    imp.existentes.forEach(i => { ordem[i.mapa] = Math.max(ordem[i.mapa] || 0, i.ordem || 0); });
+    const novos = [], atualizados = [], antes = [];
+    escolhidas.forEach(l => {
+      if (l.status === 'novo') { ordem[l.it.mapa] = (ordem[l.it.mapa] || 0) + 10; novos.push(Object.assign({}, l.it, { id: D.novoId(), ordem: ordem[l.it.mapa] })); }
+      else { atualizados.push(l.it); antes.push(l.antes); }
+    });
+    await D.itens.trocar([], novos.concat(atualizados));
+    imp = null;
     U.fecharDialogo();
-    U.aviso(`${n} itens importados para ${a.matricula}.`);
+    const partes = [novos.length && `${novos.length} ${novos.length === 1 ? 'item novo' : 'itens novos'}`, atualizados.length && `${atualizados.length} ${atualizados.length === 1 ? 'atualizado' : 'atualizados'}`].filter(Boolean);
+    U.aviso(`${a.matricula}: ${partes.join(' e ')}.`, { acao: { rotulo: 'Desfazer', fn: async () => { await D.itens.trocar(novos.map(i => i.id), antes); U.aviso('Importação desfeita.'); await AC.redesenhar(); } } });
     await AC.redesenhar();
   };
 
@@ -492,7 +602,6 @@
       corpo: `<div class="form-grade">${campo('Calcular a situação em', `<input id="rf-data" name="data" type="date" value="${ctx.ref}" required>`, 'c6')}
         <div class="campo c6"><div class="opcoes-radio" style="gap:6px">
           <button type="button" class="botao pequeno" data-acao="usarHoje">Hoje (${R.fmtData(R.hojeISO())})</button>
-          ${cfg.demo ? `<button type="button" class="botao pequeno" data-acao="usarDataMicca">Data do MICCA do PR-ELF (11/10/2023)</button>` : ''}
         </div></div></div>`,
       rodape: `<button type="button" class="botao" data-acao="fecharDialogo">Cancelar</button><button type="submit" class="botao primario">${ic('calendario')}Usar esta data</button>`
     }), 'estreito');
@@ -508,7 +617,6 @@
   /* =================== CONFIGURAÇÕES =================== */
   async function config() {
     const cfg = AC.cfg();
-    const kb = Math.round(D.backup.tamanho() / 1024);
     U.abrirDialogo(U.moldura({
       titulo: 'Configurações', form: 'config',
       corpo: `<div class="form-grade">
@@ -517,23 +625,20 @@
         ${campo('ou de (horas)', `<input id="cf-horas" name="horas" inputmode="decimal" value="${R.fmtH(cfg.alertaHoras ?? 25)}">`, 'meia')}
         <p class="dica" style="grid-column:1/-1;margin:-4px 0 0;font-size:12.5px;color:var(--tinta-3)">Para itens de intervalo curto (30 dias, 50 h) o alerta usa no máximo 25% do intervalo, para não ficar sempre amarelo.</p>
         <div class="sep-form">Backup</div>
-        <div class="campo c6"><span class="dica">Os dados ficam neste navegador (${kb} KB). Exporte um backup com frequência; na versão com servidor isso deixa de ser necessário.</span>
+        <div class="campo c6"><span class="dica">Os dados ficam no servidor, com acesso só para usuários autorizados. O backup baixa uma cópia de tudo; importar um backup substitui todos os dados do servidor.</span>
           <div class="opcoes-radio" style="gap:6px;margin-top:4px">
             <button type="button" class="botao pequeno" data-acao="exportarBackup">${ic('baixar')}Exportar backup</button>
             <label class="botao pequeno" style="cursor:pointer">${ic('subir')}Importar backup<input type="file" accept=".json,application/json" data-acao-arquivo="importarBackup" hidden></label>
           </div></div>
-        ${cfg.demo ? `<div class="sep-form">Demonstração</div>
-        <div class="campo c6"><span class="dica">Volta tudo ao estado inicial: PR-ELF com os dados do papel e a frota fictícia.</span>
-          <div><button type="button" class="botao pequeno perigo" data-acao="restaurarDemo">${ic('desfazer')}Restaurar demonstração</button></div></div>` : ''}
       </div>`,
       rodape: `<button type="button" class="botao" data-acao="fecharDialogo">Fechar</button><button type="submit" class="botao primario">${ic('ok')}Salvar alertas</button>`
     }), 'estreito');
     const arq = document.querySelector('[data-acao-arquivo="importarBackup"]');
     arq.addEventListener('change', async () => {
       const file = arq.files[0]; if (!file) return;
-      const ok = await U.confirmar({ titulo: 'Importar backup?', texto: 'Os dados atuais deste navegador serão substituídos pelos do arquivo.', botao: 'Importar', perigo: true });
+      const ok = await U.confirmar({ titulo: 'Importar backup?', texto: 'TODOS os dados do servidor (aeronaves, itens, horas e histórico) serão substituídos pelos do arquivo, para todos os usuários.', botao: 'Importar', perigo: true });
       if (!ok) return;
-      try { await D.backup.importar(await file.text()); U.fecharDialogo(); U.aviso('Backup importado.'); location.hash = '#/frota'; await AC.redesenhar(); }
+      try { await D.backup.importar(await file.text()); U.fecharDialogo(); U.aviso('Backup importado.'); location.hash = '#/painel'; await AC.redesenhar(); }
       catch (e) { U.aviso(e.message || 'Arquivo inválido.', { tipo: 'erro' }); }
     });
   }
@@ -551,14 +656,8 @@
     novaAeronave: async el => formAeronave({ utilMensal: 20, tsn: 0 }, el && el.dataset ? el.dataset.copiar : ''),
     editarAeronave: async el => formAeronave(await D.aeronaves.obter(el.dataset.id)),
     excluirAeronave, exportarCsv, importarCsv,
-    abrirRef, usarHoje: () => definirRef(null), usarDataMicca: () => definirRef('2023-10-11'),
+    abrirRef, usarHoje: () => definirRef(null),
     config,
-    exportarBackup: async () => { U.baixar(`aerocontrol-backup-${R.hojeISO()}.json`, await D.backup.exportar(), 'application/json'); U.aviso('Backup exportado.'); },
-    restaurarDemo: async () => {
-      const ok = await U.confirmar({ titulo: 'Restaurar a demonstração?', texto: 'Tudo o que foi lançado ou cadastrado neste navegador será apagado.', botao: 'Restaurar', perigo: true });
-      if (!ok) return;
-      await D.backup.restaurarDemo(); U.fecharDialogo(); U.aviso('Demonstração restaurada.'); location.hash = '#/frota'; await AC.redesenhar();
-    },
-    fecharDemo: async () => { await D.config.salvar({ avisoDemo: false }); await AC.redesenhar(); }
+    exportarBackup: async () => { U.baixar(`aerocontrol-backup-${R.hojeISO()}.json`, await D.backup.exportar(), 'application/json'); U.aviso('Backup exportado.'); }
   });
 })();
