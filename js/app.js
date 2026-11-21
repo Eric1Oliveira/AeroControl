@@ -212,7 +212,7 @@
       const s = R.resumoAeronave(a, itens, ctx, lans);
       const sit = s.cont.vencido ? 'vencido' : s.cont.atencao ? 'atencao' : 'ok';
       return `<a class="menu-av" href="#/aeronave/${a.id}"><span class="ponto p-${sit}" aria-hidden="true"></span><b>${esc(a.matricula)}</b><small>${esc(a.modelo)}</small><span class="so-leitor">${R.SITUACOES[sit].rotulo}</span></a>`;
-    }).join('') + `<hr><button type="button" data-acao="novaAeronave">${ic('mais')}Nova aeronave</button>`;
+    }).join('') + `<hr><button type="button" data-acao="novaAeronave">${ic('mais')}Nova aeronave</button><button type="button" data-acao="importarFrota">${ic('subir')}Importar frota (planilha)</button>`;
   }
 
   /* ---------- busca global (P/N, N/S, nomenclatura, matrícula) ---------- */

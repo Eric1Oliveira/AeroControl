@@ -105,7 +105,7 @@
     const cfg = AC.cfg();
     const avs = await D.aeronaves.listar();
     if (!avs.length) {
-      return { titulo: 'Painel', html: U.faixa({ sobre: 'Painel da frota', titulo: 'Nenhuma aeronave cadastrada', sub: 'Cadastre a primeira aeronave para começar a controlar os itens do MICCA.', acoes: `<button type="button" class="botao ouro" data-acao="novaAeronave">${ic('mais')}Cadastrar aeronave</button>` }) };
+      return { titulo: 'Painel', html: U.faixa({ sobre: 'Painel da frota', titulo: 'Nenhuma aeronave cadastrada', sub: 'Cadastre a primeira aeronave ou importe a frota inteira de uma planilha.', acoes: `<button type="button" class="botao claro" data-acao="importarFrota">${ic('subir')}Importar frota (planilha)</button><button type="button" class="botao ouro" data-acao="novaAeronave">${ic('mais')}Cadastrar aeronave</button>` }) };
     }
     const itens = await D.itens.todos(), lans = await D.lancamentos.todos();
     const porId = new Map(itens.map(i => [i.id, i]));
@@ -222,6 +222,7 @@
           <div class="segmentos" id="vista-frota" role="group" aria-label="Exibir como">
             <button type="button" data-acao="vistaFrota" data-v="cartoes" aria-pressed="${est.vista === 'cartoes'}">${ic('grade')}Cartões</button>
             <button type="button" data-acao="vistaFrota" data-v="tabela" aria-pressed="${est.vista === 'tabela'}">${ic('tabela')}Tabela</button></div>
+          <button type="button" class="botao" data-acao="importarFrota">${ic('subir')}Importar frota</button>
           <button type="button" class="botao primario" data-acao="novaAeronave">${ic('mais')}Nova aeronave</button>
         </div></div>`;
 

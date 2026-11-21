@@ -140,9 +140,24 @@
     return [{ nome: arquivo.name.replace(/\.[^.]+$/, ''), linhas: ler(texto) }];
   }
 
-  /* interpreta uma aba. campos (opcional) = campo de cada coluna, quando a pessoa corrigiu na conferência.
+  /* mapa de destino numa aeronave: pelo id, ou pelo tipo quando ela só tem um daquele tipo (bimotor tem dois motores) */
+  function mapaDe(a, m) {
+    if (a.mapas.some(x => x.id === m)) return m;
+    const doTipo = a.mapas.filter(x => x.tipo === m);
+    return doTipo.length === 1 ? doTipo[0].id : null;
+  }
+  /* "prelf" / "PR ELF" → "PR-ELF"; null se não parece matrícula */
+  function normalizarMatricula(txt) {
+    let m = String(txt || '').toUpperCase().replace(/\s+/g, '');
+    if (/^[A-Z]{2}[A-Z0-9]{3}$/.test(m)) m = m.slice(0, 2) + '-' + m.slice(2);
+    return /^[A-Z0-9]{1,3}-?[A-Z0-9]{2,5}$/.test(m) ? m : null;
+  }
+
+  /* interpreta uma aba. alvo = a aeronave aberta, ou (importar frota) uma função matrícula → aeronave.
+     campos (opcional) = campo de cada coluna, quando a pessoa corrigiu na conferência.
      Devolve { titulos, campos, itens: [{ it, linha }], erros, linhasLidas, presentes } — não grava nada */
-  function interpretar(linhas, a, mapaPadrao, campos) {
+  function interpretar(linhas, alvo, mapaPadrao, campos) {
+    const frota = typeof alvo === 'function';
     const cab = acharCabecalho(linhas);
     campos = campos || cab.campos;
     const titulos = linhas[cab.i] || [];
@@ -151,17 +166,24 @@
     const temConteudo = l => l.some(c => String(c ?? '').trim());
     const res = { titulos, campos, itens: [], erros: [], linhasLidas: linhas.slice(cab.i + 1).filter(temConteudo).length, presentes };
     if (!campos.includes('nomenclatura')) { res.erros.push('Não achei a coluna com o nome do item. Em “Colunas”, diga qual é a Nomenclatura.'); return res; }
+    if (frota && !campos.includes('matricula')) { res.erros.push('Não achei a coluna da matrícula. Em “Colunas”, diga qual é a Matrícula.'); return res; }
     linhas.slice(cab.i + 1).forEach((l, k) => {
       const n = cab.i + k + 2;
       const g = col => { const p = campos.indexOf(col); return p >= 0 ? String(l[p] ?? '').trim() : ''; };
       const nome = g('nomenclatura');
       if (!nome) { if (temConteudo(l)) res.erros.push(`Linha ${n}: falta a nomenclatura.`); return; }
-      if (g('matricula') && chave(g('matricula')) !== chave(a.matricula)) { res.erros.push(`Linha ${n}: é da aeronave ${g('matricula')} — importe dentro dela.`); return; }
-      let mapa = mapaPadrao;
+      let a = alvo;
+      if (frota) {
+        if (!g('matricula')) { res.erros.push(`Linha ${n}: falta a matrícula.`); return; }
+        a = alvo(g('matricula'));
+        if (!a) { res.erros.push(`Linha ${n}: matrícula “${g('matricula')}” inválida.`); return; }
+      } else if (g('matricula') && chave(g('matricula')) !== chave(a.matricula)) { res.erros.push(`Linha ${n}: é da aeronave ${g('matricula')} — importe dentro dela.`); return; }
+      let mapa = mapaDe(a, mapaPadrao);
+      if (!g('mapa') && !mapa) { res.erros.push(`Linha ${n}: ${a.matricula} não tem o mapa “${mapaPadrao}” (use a coluna Mapa).`); return; }
       if (g('mapa')) {
         const mk = chave(g('mapa'));
         const achado = a.mapas.find(m => chave(m.id) === mk || chave(m.nome) === mk) || a.mapas.find(m => chave(m.tipo) === mk);
-        if (!achado) { res.erros.push(`Linha ${n}: mapa “${g('mapa')}” não existe nesta aeronave.`); return; }
+        if (!achado) { res.erros.push(`Linha ${n}: mapa “${g('mapa')}” não existe ${frota ? 'no ' + a.matricula : 'nesta aeronave'}.`); return; }
         mapa = achado.id;
       }
       const situacao = lerSituacao(g('situacao'));
@@ -174,7 +196,7 @@
       const tsnTxt = g('tsncomponente');
       let tsnBase = null;
       if (/^ign/i.test(tsnTxt)) tsnBase = 'IGN';
-      else { const v = R.lerNumero(tsnTxt); if (v !== null) tsnBase = et !== null ? Math.round((v - (a.tsn - et)) * 10) / 10 : v; }
+      else { const v = R.lerNumero(tsnTxt); if (v !== null) tsnBase = et !== null ? Math.round((v - ((a.tsn ?? 0) - et)) * 10) / 10 : v; }
       const ref = chave(g('controladoem'));
       res.itens.push({ linha: n, it: {
         aeronaveId: a.id, mapa, secao: g('secao'), grupo: g('grupo'), nome, pn: g('pn'), ns: g('ns'),
@@ -193,8 +215,8 @@
      na planilha — célula vazia não apaga o que está cadastrado.
      entrada: [{ it, linha, aba, presentes }] → [{ status: novo|atualiza|igual|repetida, it, antes, mud, linha, aba, chave }] */
   const temNS = it => !!chave(it.ns) && !/^(na|nd|sn|semns)$/.test(chave(it.ns));
-  const kNS = it => `${it.mapa}|${chave(it.pn)}|${chave(it.ns)}`;
-  const kNome = it => `${it.mapa}|${chave(it.nome)}|${chave(it.pn)}`;
+  const kNS = it => `${it.aeronaveId}|${it.mapa}|${chave(it.pn)}|${chave(it.ns)}`;
+  const kNome = it => `${it.aeronaveId}|${it.mapa}|${chave(it.nome)}|${chave(it.pn)}`;
   const vazio = v => v === null || v === undefined || v === '' || v === false;
   function igual(x, y) {
     if (vazio(x) && vazio(y)) return true;
@@ -235,6 +257,30 @@
     });
   }
 
-  AC.planilha = { csv, ler, exportarMapa, abrir, interpretar, conferir, lerData, COLUNAS, CAMPOS, SIT_TXT, TIPO_TXT };
+  /* aba de aeronaves (importar frota): cabeçalho com Matrícula + TSN ou Modelo, sem Nomenclatura.
+     Devolve [{ matricula, fabricante, modelo, sn, ano, tsn, posicaoData }] ou null se a aba não é desse tipo */
+  const CAMPOS_AV = { matricula: 'matricula', prefixo: 'matricula', aeronave: 'matricula', registration: 'matricula', marcas: 'matricula',
+    fabricante: 'fabricante', manufacturer: 'fabricante', modelo: 'modelo', model: 'modelo',
+    sn: 'sn', ns: 'sn', serie: 'sn', numerodeserie: 'sn', serialnumber: 'sn', msn: 'sn',
+    ano: 'ano', anodefabricacao: 'ano', anofabricacao: 'ano', year: 'ano',
+    tsn: 'tsn', tsncelula: 'tsn', ttaf: 'tsn', ttsn: 'tsn', horascelula: 'tsn', horastotais: 'tsn', totaldehoras: 'tsn',
+    posicao: 'posicao', dataposicao: 'posicao', posicaoem: 'posicao', datadotsn: 'posicao' };
+  function lerAeronaves(linhas) {
+    for (let i = 0; i < Math.min(15, linhas.length); i++) {
+      const campos = linhas[i].map(t => CAMPOS_AV[chave(t)] || '');
+      if (!campos.includes('matricula') || !(campos.includes('tsn') || campos.includes('modelo'))) continue;
+      if (linhas[i].some(t => campoDe(t) === 'nomenclatura')) return null;   // é aba de itens
+      const out = [];
+      linhas.slice(i + 1).forEach(l => {
+        const g = c => { const p = campos.indexOf(c); return p >= 0 ? String(l[p] ?? '').trim() : ''; };
+        const matricula = normalizarMatricula(g('matricula'));
+        if (matricula) out.push({ matricula, fabricante: g('fabricante').toUpperCase(), modelo: g('modelo').toUpperCase(), sn: g('sn'), ano: R.lerNumero(g('ano')), tsn: R.lerNumero(g('tsn')), posicaoData: lerData(g('posicao')).iso || null });
+      });
+      return out;
+    }
+    return null;
+  }
+
+  AC.planilha = { csv, ler, exportarMapa, abrir, interpretar, conferir, lerAeronaves, normalizarMatricula, lerData, chave, COLUNAS, CAMPOS, SIT_TXT, TIPO_TXT };
 })();
 

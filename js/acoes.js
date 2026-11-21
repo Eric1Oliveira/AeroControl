@@ -428,50 +428,105 @@
     U.baixar(`MICCA-${at.a.matricula}-${nome}.csv`.replace(/\s+/g, '-'), txt, 'text/csv;charset=utf-8');
     U.aviso(`Mapa ${nome} exportado. O mesmo arquivo serve de modelo para importar.`);
   }
-  /* ---- importar planilha: 1) escolher o arquivo  2) conferir  3) aplicar (só aí grava) ---- */
+  /* ---- importar planilha: 1) escolher o arquivo  2) conferir  3) aplicar (só aí grava) ----
+     Duas entradas: dentro de uma aeronave (importarCsv) ou a frota inteira pelo Painel (importarFrota). */
   let imp = null;
   const ST_IMP = { novo: 'Novo', atualiza: 'Atualiza', igual: 'Igual', repetida: 'Repetida' };
-  async function importarCsv() {
-    const at = exigirAeronaveAtual();
-    const mapa = at.aba === 'historico' ? at.a.mapas[0].id : at.aba;
+  const MAPAS_FROTA = [['celula', 'Célula', 'celula'], ['motor', 'Motor', 'motor'], ['helice', 'Hélice', 'helice']];
+  const LIMITE_LINHAS = 400;   // acima disso a tabela pede para filtrar (frota com milhares de itens)
+  const semAcento = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  const plural = (n, um, varios) => `${n} ${n === 1 ? um : varios}`;
+  const juntar = p => (p.length > 1 ? p.slice(0, -1).join(', ') + ' e ' + p[p.length - 1] : p[0] || '');
+
+  function escolherArquivo({ titulo, sub, dica, abrir }) {
     imp = null;
     U.abrirDialogo(U.moldura({
-      titulo: 'Importar planilha', sub: `Para ${esc(at.a.matricula)}. Você confere tudo antes de gravar.`,
+      titulo, sub,
       corpo: `<label class="soltar" for="im-arq">${ic('subir')}<b>Escolher planilha</b>
           <span>Excel (.xlsx) ou CSV. Colunas com outros nomes (Part Number, Descrição, Serial…) são reconhecidas sozinhas.</span>
           <input id="im-arq" type="file" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></label>
-        <p class="dica-imp">Dica: o arquivo de “Exportar” é o modelo completo. Planilha com várias abas (Célula, Motor, Hélice) entra de uma vez.</p>`,
+        <p class="dica-imp">${dica}</p>`,
       rodape: `<button type="button" class="botao" data-acao="fecharDialogo">Cancelar</button>`
     }), 'estreito');
     const inp = document.getElementById('im-arq');
     inp.addEventListener('change', async () => {
       const arq = inp.files[0];
       if (!arq) return;
-      try { await abrirConferencia(arq, at.a.id, mapa); }
+      try { await abrir(arq); }
       catch (e) { console.error(e); U.aviso(e.message || 'Não foi possível ler a planilha.', { tipo: 'erro' }); inp.value = ''; }
     });
   }
+  function importarCsv() {
+    const at = exigirAeronaveAtual();
+    const mapa = at.aba === 'historico' ? at.a.mapas[0].id : at.aba;
+    escolherArquivo({
+      titulo: 'Importar planilha', sub: `Para ${esc(at.a.matricula)}. Você confere tudo antes de gravar.`,
+      dica: 'Dica: o arquivo de “Exportar” é o modelo completo. Planilha com várias abas (Célula, Motor, Hélice) entra de uma vez.',
+      abrir: arq => abrirConferencia(arq, at.a.id, mapa)
+    });
+  }
+  function importarFrota() {
+    escolherArquivo({
+      titulo: 'Importar frota', sub: 'Itens de várias aeronaves numa planilha só, separados pela coluna Matrícula. Você confere tudo antes de gravar.',
+      dica: 'Aeronave que ainda não existe é criada junto (monomotor: Célula, Motor e Hélice — bimotor, cadastre antes). Uma aba “Aeronaves” com Matrícula, Modelo, TSN e Data da posição já preenche os dados delas; sem ela, você informa na conferência.',
+      abrir: arq => abrirConferencia(arq, null, 'celula')
+    });
+  }
+
   async function abrirConferencia(arq, avId, mapaPadrao) {
-    const a = await D.aeronaves.obter(avId);
-    const abas = (await AC.planilha.abrir(arq)).filter(x => x.linhas.some(l => l.some(c => String(c ?? '').trim())));
+    const P = AC.planilha, frota = !avId;
+    const a = frota ? null : await D.aeronaves.obter(avId);
+    let abas = (await P.abrir(arq)).filter(x => x.linhas.some(l => l.some(c => String(c ?? '').trim())));
     if (!abas.length) throw new Error('A planilha está vazia.');
-    const pelaAba = nome => { const k = nome.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase(); return a.mapas.find(m => k.includes(m.nome.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()) || k.includes(m.tipo))?.id; };
+    const dadosAv = new Map();
+    let abaAv = null;
+    if (frota) {
+      abas = abas.filter(x => {
+        const lista = P.lerAeronaves(x.linhas);
+        if (!lista) return true;
+        abaAv = x.nome; lista.forEach(r => dadosAv.set(P.chave(r.matricula), r));
+        return false;
+      });
+      if (!abas.length) throw new Error('Achei só a lista de aeronaves — faltam as abas com os itens.');
+    }
+    const opcoesMapa = frota ? MAPAS_FROTA : a.mapas.map(m => [m.id, m.nome, m.tipo]);
+    const pelaAba = nome => { const k = semAcento(nome); return (opcoesMapa.find(([, rot, tipo]) => k.includes(semAcento(rot))) || opcoesMapa.find(([, , tipo]) => k.includes(tipo)) || [])[0]; };
     imp = {
-      arquivo: arq.name, a, filtro: 'todos', desmarcados: new Set(),
-      existentes: JSON.parse(JSON.stringify(await D.itens.daAeronave(a.id))),
-      util: R.utilizacaoDia(a, await D.lancamentos.todos(), ctxAtual().ref).porDia,
+      frota, arquivo: arq.name, a, todas: frota ? await D.aeronaves.listar() : [a], novas: new Map(), dadosAv, abaAv, opcoesMapa,
+      filtro: 'todos', filtroAv: '', desmarcados: new Set(), utilPor: {}, lancs: await D.lancamentos.todos(),
+      existentes: JSON.parse(JSON.stringify(frota ? await D.itens.todos() : await D.itens.daAeronave(a.id))),
       abas: abas.map(x => ({ nome: x.nome, linhas: x.linhas, mapa: (abas.length > 1 && pelaAba(x.nome)) || mapaPadrao, campos: null }))
     };
     recalcular();
     desenharConferencia(true);
   }
+  /* importar frota: matrícula da linha → aeronave cadastrada, ou nova (só é criada ao aplicar) */
+  function aeronaveDaLinha(txt) {
+    const P = AC.planilha, m = P.normalizarMatricula(txt);
+    if (!m) return null;
+    const k = P.chave(m);
+    const ex = imp.todas.find(x => P.chave(x.matricula) === k);
+    if (ex) return ex;
+    if (!imp.novas.has(k)) {
+      const d = imp.dadosAv.get(k) || {};
+      imp.novas.set(k, {
+        id: D.novoId(), matricula: m, fabricante: d.fabricante || '', modelo: d.modelo || '', sn: d.sn || '', ano: d.ano || null,
+        tsn: d.tsn ?? null, tso: null, posicaoData: d.posicaoData || null, utilMensal: 20, ciclos: null,
+        mapas: MAPAS_FROTA.map(([id, nome, tipo]) => ({ id, tipo, nome }))
+      });
+    }
+    return imp.novas.get(k);
+  }
+  const aeronaveDe = id => imp.todas.find(x => x.id === id) || [...imp.novas.values()].find(x => x.id === id);
+  const semPosicao = a => a.tsn === null || a.tsn === undefined || !a.posicaoData;
+
   function recalcular() {
     const entrada = [];
     imp.erros = [];
     imp.abas.forEach(ab => {
       ab.res = null;
       if (!ab.mapa) return;   // "Não importar"
-      const res = AC.planilha.interpretar(ab.linhas, imp.a, ab.mapa, ab.campos);
+      const res = AC.planilha.interpretar(ab.linhas, imp.frota ? aeronaveDaLinha : imp.a, ab.mapa, ab.campos);
       ab.res = res; ab.campos = res.campos;
       res.itens.forEach(x => entrada.push({ it: x.it, linha: x.linha, aba: ab.nome, presentes: res.presentes }));
       res.erros.forEach(e => imp.erros.push(imp.abas.length > 1 ? `${ab.nome} · ${e}` : e));
@@ -499,54 +554,81 @@
     return p.join(' · ') || '—';
   }
   function linhaConferencia(l, ctx) {
-    const it = l.it, a = imp.a;
+    const it = l.it, a = aeronaveDe(it.aeronaveId);
     const mapa = a.mapas.find(m => m.id === it.mapa)?.nome || it.mapa;
-    const r = R.calcular(it, a, ctx, imp.util);
-    const venc = [r.vencData ? R.fmtData(r.vencData) : '', r.vencTsn !== null ? `${R.fmtH(r.vencTsn)} h` : ''].filter(Boolean).join(' · ');
+    let venc = '—', etiq = '';
+    if (semPosicao(a)) venc = 'informe TSN e posição da aeronave';
+    else {
+      if (!(a.id in imp.utilPor)) imp.utilPor[a.id] = R.utilizacaoDia(a, imp.lancs, ctx.ref).porDia;
+      const r = R.calcular(it, a, ctx, imp.utilPor[a.id]);
+      venc = [r.vencData ? R.fmtData(r.vencData) : '', r.vencTsn !== null ? `${R.fmtH(r.vencTsn)} h` : ''].filter(Boolean).join(' · ') || '—';
+      etiq = U.etiqueta(r.situacao);
+    }
     const pode = l.status === 'novo' || l.status === 'atualiza';
     const mud = l.mud.length ? `<ul class="cf-mud">${l.mud.slice(0, 4).map(m => `<li>${esc(m.rotulo)}: <s>${esc(fmtValor(m.campo, m.de))}</s> → <b>${esc(fmtValor(m.campo, m.para))}</b></li>`).join('')}${l.mud.length > 4 ? `<li>e mais ${l.mud.length - 4} campos</li>` : ''}</ul>` : '';
     return `<tr class="cf-${l.status}">
       <td class="cf-marca">${pode ? `<input type="checkbox" data-cf-marca="${esc(l.chave)}"${imp.desmarcados.has(l.chave) ? '' : ' checked'} aria-label="Aplicar ${esc(it.nome)}">` : ''}</td>
       <td><span class="cf-selo cf-${l.status}">${ST_IMP[l.status]}</span><small class="cf-lin">linha ${l.linha}</small></td>
-      <td><b class="cf-nome">${esc(it.nome)}</b><small>${esc([mapa, it.secao, it.grupo].filter(Boolean).join(' · '))}</small>${mud}</td>
+      <td><b class="cf-nome">${esc(it.nome)}</b><small>${esc([imp.frota ? a.matricula : '', mapa, it.secao, it.grupo].filter(Boolean).join(' · '))}</small>${mud}</td>
       <td class="cf-pn">${esc(it.pn || '—')}<small>${it.ns ? 'N/S ' + esc(it.ns) : ''}</small></td>
       <td>${esc(controleTxt(it))}</td>
-      <td><span class="cf-venc">${esc(venc || '—')}</span>${U.etiqueta(r.situacao)}</td>
+      <td><span class="cf-venc">${esc(venc)}</span>${etiq}</td>
     </tr>`;
   }
+  /* importar frota: quadro com as aeronaves da planilha; as novas pedem TSN e data da posição */
+  function quadroAeronaves(porAv) {
+    const novaK = new Map([...imp.novas].map(([k, x]) => [x.id, k]));
+    const lista = [...imp.todas, ...imp.novas.values()].filter(x => porAv[x.id]).sort((x, y) => x.matricula.localeCompare(y.matricula));
+    const nNovas = lista.filter(x => novaK.has(x.id)).length;
+    const cartao = x => {
+      const k = novaK.get(x.id), linhas = plural(porAv[x.id], 'linha', 'linhas');
+      if (!k) return `<div class="cf-av"><div class="cf-av-cab"><b>${esc(x.matricula)}</b><span class="cf-selo cf-igual">Cadastrada</span></div>
+        <small>${esc(x.modelo || '')}${x.modelo ? ' · ' : ''}TSN ${R.fmtH(x.tsn)} h · ${linhas}</small></div>`;
+      const campoAv = (rot, campo, valor, extra) => `<label>${rot}<input data-cf-nova="${esc(k)}" data-campo="${campo}" value="${esc(valor ?? '')}"${extra || ''}></label>`;
+      return `<div class="cf-av nova${semPosicao(x) ? ' falta' : ''}"><div class="cf-av-cab"><b>${esc(x.matricula)}</b><span class="cf-selo cf-novo">Nova</span><small>${linhas}</small></div>
+        <div class="cf-av-campos">${campoAv('Modelo', 'modelo', x.modelo, ' placeholder="ex.: PA-46R-350T"')}
+          ${campoAv('TSN da célula', 'tsn', x.tsn === null ? '' : R.fmtH(x.tsn), ' inputmode="decimal" placeholder="0,0"')}
+          ${campoAv('Posição em', 'posicaoData', x.posicaoData, ' type="date"')}</div></div>`;
+    };
+    return `<div class="cf-avs"><div class="cf-avs-cab"><b>Aeronaves</b><span>${plural(lista.length, 'aeronave', 'aeronaves')} na planilha${nNovas ? ` · ${plural(nNovas, 'nova', 'novas')} (precisam de TSN e data da posição)` : ''}${imp.abaAv ? ` · dados lidos da aba “${esc(imp.abaAv)}”` : ''}</span></div>
+      <div class="cf-avs-lista">${lista.map(cartao).join('')}</div></div>`;
+  }
   function desenharConferencia(primeira) {
-    const L = imp.linhas, a = imp.a, ctx = ctxAtual();
-    const n = { novo: 0, atualiza: 0, igual: 0, repetida: 0 };
-    L.forEach(l => { n[l.status]++; });
+    const L = imp.linhas, ctx = ctxAtual();
+    const n = { novo: 0, atualiza: 0, igual: 0, repetida: 0 }, porAv = {};
+    L.forEach(l => { n[l.status]++; if (l.status !== 'repetida') porAv[l.it.aeronaveId] = (porAv[l.it.aeronaveId] || 0) + 1; });
     const nProb = imp.erros.length + n.repetida;
     const f = imp.filtro;
-    const vis = f === 'todos' ? L.filter(l => l.status !== 'repetida') : L.filter(l => l.status === f);
+    const vis = (f === 'todos' ? L.filter(l => l.status !== 'repetida') : L.filter(l => l.status === f)).filter(l => !imp.filtroAv || l.it.aeronaveId === imp.filtroAv);
     const seg = (v, rot, q, cls) => `<button type="button" data-cf-filtro="${v}" aria-pressed="${f === v}">${rot}<span class="n${cls ? ' ' + cls : ''}">${q}</span></button>`;
     const abas = imp.abas.map((ab, i) => {
       const reconh = (ab.campos || []).filter(Boolean).length, total = (ab.res?.titulos || ab.linhas[0] || []).length;
       const semNome = ab.res && !ab.campos.includes('nomenclatura');
       return `<div class="cf-aba">
-        <div class="cf-aba-cab"><b>${esc(ab.nome)}</b><span>${ab.res ? `${ab.res.linhasLidas} ${ab.res.linhasLidas === 1 ? 'linha' : 'linhas'}` : 'fora da importação'}</span>
-          <label>Mapa <select data-cf-aba="${i}">${a.mapas.map(m => opt(m.id, m.nome, m.id === ab.mapa)).join('')}${imp.abas.length > 1 ? opt('', 'Não importar esta aba', !ab.mapa) : ''}</select></label></div>
+        <div class="cf-aba-cab"><b>${esc(ab.nome)}</b><span>${ab.res ? plural(ab.res.linhasLidas, 'linha', 'linhas') : 'fora da importação'}</span>
+          <label>Mapa <select data-cf-aba="${i}">${imp.opcoesMapa.map(([id, rot]) => opt(id, rot, id === ab.mapa)).join('')}${imp.abas.length > 1 ? opt('', 'Não importar esta aba', !ab.mapa) : ''}</select></label></div>
         ${ab.res ? `<details${semNome ? ' open' : ''}><summary>Colunas: ${reconh} reconhecidas${total - reconh > 0 ? `, ${total - reconh} ignoradas` : ''} <em>conferir ou corrigir</em></summary>
           <div class="cf-colunas">${ab.res.titulos.map((t, j) => `<label><span>${esc(String(t).trim() || 'Coluna ' + (j + 1))}</span>
             <select data-cf-aba="${i}" data-cf-col="${j}">${opt('', 'Ignorar', !ab.campos[j])}${AC.planilha.CAMPOS.map(([k, rot]) => opt(k, rot, ab.campos[j] === k)).join('')}</select></label>`).join('')}</div></details>` : ''}
       </div>`;
     }).join('');
+    const filtroAv = imp.frota && Object.keys(porAv).length > 1 ? `<select class="cf-filtro-av" data-cf-filtro-av aria-label="Filtrar por aeronave">${opt('', 'Todas as aeronaves', !imp.filtroAv)}${Object.keys(porAv).map(aeronaveDe).sort((x, y) => x.matricula.localeCompare(y.matricula)).map(x => opt(x.id, `${x.matricula} (${porAv[x.id]})`, imp.filtroAv === x.id)).join('')}</select>` : '';
     const corpoTabela = f === 'problemas'
       ? `<ul class="cf-problemas">${imp.erros.map(e => `<li>${ic('alerta')}${esc(e)}</li>`).join('')}${L.filter(l => l.status === 'repetida').map(l => `<li>${ic('alerta')}${imp.abas.length > 1 ? esc(l.aba) + ' · ' : ''}Linha ${l.linha}: ${esc(l.it.nome)} repete a linha ${l.igualA} (mesmo nome, P/N e N/S) — fica de fora.</li>`).join('')}${nProb ? '' : '<li class="ok">Nenhum problema encontrado.</li>'}</ul>`
       : vis.length ? `<div class="cf-rolagem"><table class="cf-tabela"><thead><tr><th class="cf-marca">${vis.some(l => l.status === 'novo' || l.status === 'atualiza') ? `<input type="checkbox" data-cf-todos aria-label="Marcar todos" checked>` : ''}</th><th>Importação</th><th>Item</th><th>P/N · N/S</th><th>Controle</th><th>Vencimento</th></tr></thead>
-          <tbody>${vis.map(l => linhaConferencia(l, ctx)).join('')}</tbody></table></div>`
+          <tbody>${vis.slice(0, LIMITE_LINHAS).map(l => linhaConferencia(l, ctx)).join('')}</tbody></table></div>
+          ${vis.length > LIMITE_LINHAS ? `<p class="cf-mais">Mostrando ${LIMITE_LINHAS} de ${vis.length} linhas — ${imp.frota ? 'escolha uma aeronave ou um filtro' : 'use os filtros'} para ver o resto. Todas entram ao aplicar.</p>` : ''}`
         : `<div class="vazio-bloco"><strong>Nada aqui</strong>Nenhuma linha neste filtro.</div>`;
     const qtd = aplicaveis().length;
     const html = U.moldura({
-      titulo: 'Conferir importação', sub: `${esc(imp.arquivo)} → ${esc(a.matricula)}. Nada foi gravado ainda: confira e aplique.`, form: 'conferencia',
-      corpo: `<div class="cf-abas">${abas}</div>
-        <div class="segmentos cf-filtros" role="group" aria-label="Filtrar linhas">${seg('todos', 'Todos', n.novo + n.atualiza + n.igual)}${seg('novo', 'Novos', n.novo)}${seg('atualiza', 'Atualizam', n.atualiza)}${seg('igual', 'Iguais', n.igual)}${seg('problemas', 'Problemas', nProb, nProb ? 'n-venc' : '')}</div>
+      titulo: imp.frota ? 'Conferir importação da frota' : 'Conferir importação',
+      sub: `${esc(imp.arquivo)} → ${imp.frota ? plural(Object.keys(porAv).length, 'aeronave', 'aeronaves') : esc(imp.a.matricula)}. Nada foi gravado ainda: confira e aplique.`, form: 'conferencia',
+      corpo: `${imp.frota ? quadroAeronaves(porAv) : ''}<div class="cf-abas">${abas}</div>
+        <div class="cf-filtros"><div class="segmentos" role="group" aria-label="Filtrar linhas">${seg('todos', 'Todos', n.novo + n.atualiza + n.igual)}${seg('novo', 'Novos', n.novo)}${seg('atualiza', 'Atualizam', n.atualiza)}${seg('igual', 'Iguais', n.igual)}${seg('problemas', 'Problemas', nProb, nProb ? 'n-venc' : '')}</div>${filtroAv}</div>
         ${corpoTabela}`,
-      rodape: `<span class="esq cf-nota">Itens iguais não mudam nada. Os que já existem mantêm o histórico.</span>
+      rodape: `<span class="esq cf-nota">${imp.frota ? 'Aeronaves novas e itens são gravados juntos ao aplicar.' : 'Itens iguais não mudam nada. Os que já existem mantêm o histórico.'}</span>
         <button type="button" class="botao" data-acao="fecharDialogo">Cancelar</button>
-        <button type="submit" class="botao primario" id="cf-aplicar"${qtd ? '' : ' disabled'}>${ic('ok')}Aplicar ${qtd} ${qtd === 1 ? 'item' : 'itens'}</button>`
+        <button type="submit" class="botao primario" id="cf-aplicar"${qtd ? '' : ' disabled'}>${ic('ok')}Aplicar ${plural(qtd, 'item', 'itens')}</button>`
     });
     const dlg = document.getElementById('dlg');
     const rol = dlg.querySelector('.dlg-corpo')?.scrollTop || 0;
@@ -555,13 +637,19 @@
     ligarConferencia(dlg.querySelector('form'));
   }
   function ligarConferencia(form) {
-    const contar = () => { const q = aplicaveis().length, b = form.querySelector('#cf-aplicar'); b.disabled = !q; b.lastChild.textContent = `Aplicar ${q} ${q === 1 ? 'item' : 'itens'}`; };
+    const contar = () => { const q = aplicaveis().length, b = form.querySelector('#cf-aplicar'); b.disabled = !q; b.lastChild.textContent = `Aplicar ${plural(q, 'item', 'itens')}`; };
     form.addEventListener('change', e => {
       const t = e.target;
       if (t.dataset.cfMarca !== undefined) { if (t.checked) imp.desmarcados.delete(t.dataset.cfMarca); else imp.desmarcados.add(t.dataset.cfMarca); contar(); return; }
       if (t.dataset.cfTodos !== undefined) {
         form.querySelectorAll('[data-cf-marca]').forEach(c => { c.checked = t.checked; if (t.checked) imp.desmarcados.delete(c.dataset.cfMarca); else imp.desmarcados.add(c.dataset.cfMarca); });
         contar(); return;
+      }
+      if (t.dataset.cfFiltroAv !== undefined) { imp.filtroAv = t.value; desenharConferencia(); return; }
+      if (t.dataset.cfNova !== undefined) {
+        const av = imp.novas.get(t.dataset.cfNova), campo = t.dataset.campo;
+        av[campo] = campo === 'tsn' ? R.lerNumero(t.value) : campo === 'modelo' ? t.value.trim().toUpperCase() : (t.value || null);
+        recalcular(); desenharConferencia(); return;
       }
       if (t.dataset.cfAba !== undefined) {
         const ab = imp.abas[+t.dataset.cfAba];
@@ -577,18 +665,29 @@
   AC.forms.conferencia = async () => {
     const escolhidas = aplicaveis();
     if (!escolhidas.length) throw new Error('Nada para aplicar: marque ao menos um item novo ou que atualiza.');
-    const a = imp.a, ordem = {};
-    imp.existentes.forEach(i => { ordem[i.mapa] = Math.max(ordem[i.mapa] || 0, i.ordem || 0); });
+    const usadas = new Set(escolhidas.map(l => l.it.aeronaveId));
+    const novas = [...imp.novas.values()].filter(x => usadas.has(x.id));
+    const faltam = novas.filter(x => semPosicao(x) || x.tsn < 0);
+    if (faltam.length) throw new Error(`Informe o TSN da célula e a data da posição de ${juntar(faltam.map(x => x.matricula))} (quadro Aeronaves, no alto).`);
+    const ordem = {}, chaveOrdem = i => `${i.aeronaveId}|${i.mapa}`;
+    imp.existentes.forEach(i => { ordem[chaveOrdem(i)] = Math.max(ordem[chaveOrdem(i)] || 0, i.ordem || 0); });
     const novos = [], atualizados = [], antes = [];
     escolhidas.forEach(l => {
-      if (l.status === 'novo') { ordem[l.it.mapa] = (ordem[l.it.mapa] || 0) + 10; novos.push(Object.assign({}, l.it, { id: D.novoId(), ordem: ordem[l.it.mapa] })); }
+      if (l.status === 'novo') { const k = chaveOrdem(l.it); ordem[k] = (ordem[k] || 0) + 10; novos.push(Object.assign({}, l.it, { id: D.novoId(), ordem: ordem[k] })); }
       else { atualizados.push(l.it); antes.push(l.antes); }
     });
+    if (novas.length) await D.aeronaves.salvarVarias(novas);   // ids fixos: se os itens falharem, aplicar de novo não duplica
     await D.itens.trocar([], novos.concat(atualizados));
+    const idsNovas = new Set(novas.map(x => x.id));
+    const titulo = imp.frota ? 'Frota' : imp.a.matricula;
     imp = null;
     U.fecharDialogo();
-    const partes = [novos.length && `${novos.length} ${novos.length === 1 ? 'item novo' : 'itens novos'}`, atualizados.length && `${atualizados.length} ${atualizados.length === 1 ? 'atualizado' : 'atualizados'}`].filter(Boolean);
-    U.aviso(`${a.matricula}: ${partes.join(' e ')}.`, { acao: { rotulo: 'Desfazer', fn: async () => { await D.itens.trocar(novos.map(i => i.id), antes); U.aviso('Importação desfeita.'); await AC.redesenhar(); } } });
+    const partes = [novas.length && plural(novas.length, 'aeronave nova', 'aeronaves novas'), novos.length && plural(novos.length, 'item novo', 'itens novos'), atualizados.length && plural(atualizados.length, 'atualizado', 'atualizados')].filter(Boolean);
+    U.aviso(`${titulo}: ${juntar(partes)}.`, { acao: { rotulo: 'Desfazer', fn: async () => {
+      for (const x of novas) await D.aeronaves.excluir(x.id);   // os itens delas saem junto
+      await D.itens.trocar(novos.filter(i => !idsNovas.has(i.aeronaveId)).map(i => i.id), antes);
+      U.aviso('Importação desfeita.'); await AC.redesenhar();
+    } } });
     await AC.redesenhar();
   };
 
@@ -655,7 +754,7 @@
     novoItem, editarItem, excluirItem,
     novaAeronave: async el => formAeronave({ utilMensal: 20, tsn: 0 }, el && el.dataset ? el.dataset.copiar : ''),
     editarAeronave: async el => formAeronave(await D.aeronaves.obter(el.dataset.id)),
-    excluirAeronave, exportarCsv, importarCsv,
+    excluirAeronave, exportarCsv, importarCsv, importarFrota,
     abrirRef, usarHoje: () => definirRef(null),
     config,
     exportarBackup: async () => { U.baixar(`aerocontrol-backup-${R.hojeISO()}.json`, await D.backup.exportar(), 'application/json'); U.aviso('Backup exportado.'); }

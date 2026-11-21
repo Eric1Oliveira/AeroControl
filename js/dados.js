@@ -176,6 +176,13 @@
       a.id = novo.id;
       return clone(novo);
     },
+    /* várias de uma vez, numa única operação (importar frota) */
+    async salvarVarias(lista) {
+      const novas = lista.map(a => Object.assign({}, a, { id: a.id || novoId(), criadoEm: null }));
+      const r = await chamar('/rest/v1/aeronaves?on_conflict=id', { metodo: 'POST', corpo: novas.map(a => paraBanco('aeronaves', a)), cab: { Prefer: 'resolution=merge-duplicates,return=representation' } });
+      r.forEach(x => trocar(db.aeronaves, doBanco('aeronaves', x)));
+      return r.length;
+    },
     async excluir(id) {
       const r = await chamar(`/rest/v1/aeronaves?${filtroId(id)}`, { metodo: 'DELETE', cab: { Prefer: 'return=representation' } });
       if (!r || !r.length) throw new Error('Aeronave não encontrada ou sem permissão para excluir.');
